@@ -31,7 +31,7 @@ cargo run
 | Endpoint | Description |
 |---|---|
 | `GET /health` | Health check |
-| `GET /api/v1/tx/:signature` | Full transaction with decoded instructions |
+| `GET /api/v1/tx/{signature}` | Full transaction with decoded instructions |
 | `GET /api/v1/transactions` | List transactions with filters |
 
 ### Query Parameters for `/api/v1/transactions`
@@ -78,10 +78,9 @@ All via environment variables — see [.env.example](.env.example).
 src/
 ├── main.rs        — Bootstrap, IDL cascade, graceful shutdown
 ├── config.rs      — Environment-based configuration
-├── error.rs       — Unified error types (thiserror)
 ├── idl.rs         — Anchor IDL model + on-chain loading
-├── db.rs          — PostgreSQL schema, queries
-├── api.rs         — REST API (axum)
+├── db.rs          — PostgreSQL schema, queries, indexing transactions
+├── api.rs         — REST API (axum) with rate-limiting
 └── indexer/
     ├── mod.rs     — Indexing modes (batch + realtime)
     ├── fetcher.rs — Async RPC with exponential backoff
