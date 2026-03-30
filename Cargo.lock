@@ -4187,6 +4187,7 @@ dependencies = [
  "chrono",
  "dotenvy",
  "flate2",
+ "parking_lot",
  "serde",
  "serde_json",
  "sha2 0.10.9",

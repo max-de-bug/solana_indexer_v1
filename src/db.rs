@@ -2,8 +2,6 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 use tracing::info;
 
-/// Re-export for callers that need to open transactions.
-pub use sqlx::PgPool as Pool;
 
 // ---------------------------------------------------------------------------
 // Pool

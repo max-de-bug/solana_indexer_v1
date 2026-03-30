@@ -7,7 +7,6 @@ use crate::idl::{AnchorIdl, IdlTypeDef};
 use crate::indexer::decoder::{decode_fields, match_instruction};
 use crate::indexer::fetcher::Fetcher;
 use serde_json::json;
-use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status::EncodedTransaction;
 use sqlx::PgPool;
 use std::collections::HashMap;

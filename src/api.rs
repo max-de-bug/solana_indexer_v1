@@ -1,13 +1,10 @@
 use axum::{
-    error_handling::HandleErrorLayer,
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::get,
-    BoxError, Json, Router,
+    routing::get, Json, Router,
 };
 use serde::Deserialize;
-use std::time::Duration;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::error;
