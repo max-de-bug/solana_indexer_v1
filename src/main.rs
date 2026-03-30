@@ -61,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
 
     // ---- Indexer ------------------------------------------------------------
     let fetcher = Fetcher::new(
-        &config.rpc_url,
+        &config.rpc_urls,
         config.max_retries,
         config.retry_delay_ms,
         cancel.clone(),
@@ -118,7 +118,7 @@ async fn load_idl(config: &Config) -> anyhow::Result<AnchorIdl> {
         let pk = Pubkey::from_str(addr)
             .map_err(|e| anyhow::anyhow!("Invalid IDL_ACCOUNT: {e}"))?;
         let rpc = RpcClient::new_with_commitment(
-            config.rpc_url.clone(), CommitmentConfig::confirmed(),
+            config.rpc_urls[0].clone(), CommitmentConfig::confirmed(),
         );
         info!(%addr, "Loading IDL from chain");
         return AnchorIdl::from_chain(&rpc, &pk).await;

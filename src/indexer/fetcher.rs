@@ -12,21 +12,53 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, warn};
 
-/// Async RPC wrapper with exponential backoff retries.
+macro_rules! retry_rpc {
+    ($self:expr, $op:expr, $rpc:ident, $body:expr) => {{
+        let mut delay = $self.initial_delay;
+        let mut attempt = 0;
+        loop {
+            let $rpc = &$self.rpcs[attempt as usize % $self.rpcs.len()];
+            match $body.await {
+                Ok(v) => break Ok(v),
+                Err(e) => {
+                    if attempt == $self.max_retries {
+                        error!(op = $op, attempt, error = %e, "Max retries exhausted");
+                        break Err(anyhow::anyhow!("{}: {}", $op, e));
+                    }
+                    warn!(op = $op, attempt, error = %e, retry_in = ?delay, "Retrying");
+                    tokio::select! {
+                        _ = tokio::time::sleep(delay) => {}
+                        _ = $self.cancel.cancelled() => {
+                            break Err(anyhow::anyhow!("{}: cancelled during retry", $op));
+                        }
+                    }
+                    delay = (delay * 2).min(Duration::from_secs(30));
+                    attempt += 1;
+                }
+            }
+        }
+    }};
+}
+
+/// Async RPC wrapper with exponential backoff retries and round-robin failover.
 pub struct Fetcher {
-    rpc: RpcClient,
+    rpcs: Vec<RpcClient>,
     max_retries: u32,
     initial_delay: Duration,
     cancel: CancellationToken,
 }
 
 impl Fetcher {
-    pub fn new(rpc_url: &str, max_retries: u32, initial_delay_ms: u64, cancel: CancellationToken) -> Self {
+    pub fn new(rpc_urls: &[String], max_retries: u32, initial_delay_ms: u64, cancel: CancellationToken) -> Self {
+        let rpcs = rpc_urls
+            .iter()
+            .map(|url| {
+                RpcClient::new_with_commitment(url.to_string(), CommitmentConfig::confirmed())
+            })
+            .collect();
+
         Self {
-            rpc: RpcClient::new_with_commitment(
-                rpc_url.to_string(),
-                CommitmentConfig::confirmed(),
-            ),
+            rpcs,
             max_retries,
             initial_delay: Duration::from_millis(initial_delay_ms),
             cancel,
@@ -34,7 +66,7 @@ impl Fetcher {
     }
 
     pub async fn get_slot(&self) -> anyhow::Result<u64> {
-        self.retry("get_slot", || self.rpc.get_slot()).await
+        retry_rpc!(self, "get_slot", rpc, rpc.get_slot())
     }
 
     pub async fn get_signatures(
@@ -51,15 +83,15 @@ impl Fetcher {
 
         let program = *program;
 
-        self.retry("get_signatures", || {
+        retry_rpc!(self, "get_signatures", rpc, {
             let config = GetConfirmedSignaturesForAddress2Config {
                 before: before_sig,
                 until: until_sig,
                 limit: Some(limit),
                 commitment: Some(CommitmentConfig::confirmed()),
             };
-            self.rpc.get_signatures_for_address_with_config(&program, config)
-        }).await
+            rpc.get_signatures_for_address_with_config(&program, config)
+        })
     }
 
     pub async fn get_transaction(
@@ -74,39 +106,8 @@ impl Fetcher {
             max_supported_transaction_version: Some(0),
         };
 
-        self.retry("get_transaction", || {
-            self.rpc.get_transaction_with_config(&signature, config)
-        }).await
-    }
-
-    /// Generic async retry with exponential backoff capped at 30 s.
-    /// Respects the cancellation token during backoff sleeps.
-    async fn retry<F, Fut, T>(&self, op: &str, f: F) -> anyhow::Result<T>
-    where
-        F: Fn() -> Fut,
-        Fut: std::future::Future<Output = Result<T, solana_client::client_error::ClientError>>,
-    {
-        let mut delay = self.initial_delay;
-        for attempt in 0..=self.max_retries {
-            match f().await {
-                Ok(v) => return Ok(v),
-                Err(e) => {
-                    if attempt == self.max_retries {
-                        error!(%op, attempt, error = %e, "Max retries exhausted");
-                        return Err(anyhow::anyhow!("{op}: {e}"));
-                    }
-                    warn!(%op, attempt, error = %e, retry_in = ?delay, "Retrying");
-                    tokio::select! {
-                        _ = tokio::time::sleep(delay) => {}
-                        _ = self.cancel.cancelled() => {
-                            return Err(anyhow::anyhow!("{op}: cancelled during retry"));
-                        }
-                    }
-                    delay = (delay * 2).min(Duration::from_secs(30));
-                }
-            }
-        }
-        unreachable!()
+        retry_rpc!(self, "get_transaction", rpc, {
+            rpc.get_transaction_with_config(&signature, config)
+        })
     }
 }
-

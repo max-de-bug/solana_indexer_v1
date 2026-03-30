@@ -5,7 +5,7 @@ use tracing::info;
 /// Application configuration, loaded entirely from environment variables.
 #[derive(Clone)]
 pub struct Config {
-    pub rpc_url: String,
+    pub rpc_urls: Vec<String>,
     pub database_url: String,
     pub program_id: Pubkey,
     /// Path to an Anchor IDL JSON file on disk (optional if `idl_account` is set).
@@ -23,7 +23,7 @@ pub struct Config {
 impl std::fmt::Debug for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Config")
-            .field("rpc_url", &"<redacted>")
+            .field("rpc_urls", &"<redacted>")
             .field("database_url", &"<redacted>")
             .field("program_id", &self.program_id)
             .field("idl_path", &self.idl_path)
@@ -51,7 +51,14 @@ pub enum IndexingMode {
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
-        let rpc_url = env_or("RPC_URL", "https://api.mainnet-beta.solana.com");
+        let rpc_urls: Vec<String> = std::env::var("RPC_URLS")
+            .unwrap_or_else(|_| env_or("RPC_URL", "https://api.mainnet-beta.solana.com"))
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        anyhow::ensure!(!rpc_urls.is_empty(), "At least one RPC URL must be specified");
+
         let database_url = required("DATABASE_URL")?;
         let program_id = Pubkey::from_str(&required("PROGRAM_ID")?)
             .map_err(|e| anyhow::anyhow!("Invalid PROGRAM_ID: {e}"))?;
@@ -90,7 +97,7 @@ impl Config {
         let poll_interval_ms = env_or("POLL_INTERVAL_MS", "2000").parse()?;
 
         let cfg = Self {
-            rpc_url,
+            rpc_urls,
             database_url,
             program_id,
             idl_path,
