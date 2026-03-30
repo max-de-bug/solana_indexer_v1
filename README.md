@@ -8,6 +8,7 @@ A production-ready Solana program indexer with Anchor IDL-based instruction deco
 - **Batch & real-time indexing** — Slot range, signature list, or real-time polling with cold-start backfill
 - **Full Borsh decoding** — Instruction arguments decoded into structured JSONB
 - **REST API** — Get transaction by signature; list transactions with filters (instruction name, signer)
+- **Enterprise RPC Load Balancer** — Automatically routes traffic to the healthiest node based on EMA latency, success rates, and slot lag heuristics
 - **Exponential backoff** — All RPC calls retried with configurable delays
 - **Graceful shutdown** — `CancellationToken` ensures clean termination
 - **Docker Compose** — Start everything with `docker compose up`
@@ -62,7 +63,7 @@ All via environment variables — see [.env.example](.env.example).
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `RPC_URL` | No | mainnet | Solana RPC endpoint |
+| `RPC_URLS` | No | mainnet | Comma-separated list of Solana RPC fallback endpoints |
 | `DATABASE_URL` | **Yes** | — | PostgreSQL connection string |
 | `PROGRAM_ID` | **Yes** | — | Program to index |
 | `IDL_PATH` | One of | — | Path to Anchor IDL JSON file |
@@ -83,6 +84,6 @@ src/
 ├── api.rs         — REST API (axum) with rate-limiting
 └── indexer/
     ├── mod.rs     — Indexing modes (batch + realtime)
-    ├── fetcher.rs — Async RPC with exponential backoff
+    ├── fetcher.rs — Async RPC with EMA Load Balancer and background slot probing
     └── decoder.rs — Borsh instruction argument decoding
 ```
