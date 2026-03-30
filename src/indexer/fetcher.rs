@@ -33,7 +33,7 @@ impl Fetcher {
         }
     }
 
-    pub async fn get_slot(&self) -> Result<u64, IndexerError> {
+    pub async fn get_slot(&self) -> anyhow::Result<u64> {
         self.retry("get_slot", || self.rpc.get_slot()).await
     }
 
@@ -43,31 +43,31 @@ impl Fetcher {
         before: Option<&str>,
         until: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<RpcConfirmedTransactionStatusWithSignature>, IndexerError> {
+    ) -> anyhow::Result<Vec<RpcConfirmedTransactionStatusWithSignature>> {
         let before_sig = before.map(Signature::from_str).transpose()
-            .map_err(|e| IndexerError::Rpc(format!("Invalid before sig: {e}")))?;
+            .map_err(|e| anyhow::anyhow!("Invalid before sig: {e}"))?;
         let until_sig = until.map(Signature::from_str).transpose()
-            .map_err(|e| IndexerError::Rpc(format!("Invalid until sig: {e}")))?;
+            .map_err(|e| anyhow::anyhow!("Invalid until sig: {e}"))?;
 
-        let config = GetConfirmedSignaturesForAddress2Config {
-            before: before_sig,
-            until: until_sig,
-            limit: Some(limit),
-            commitment: Some(CommitmentConfig::confirmed()),
-        };
         let program = *program;
 
         self.retry("get_signatures", || {
-            self.rpc.get_signatures_for_address_with_config(&program, config.clone())
+            let config = GetConfirmedSignaturesForAddress2Config {
+                before: before_sig,
+                until: until_sig,
+                limit: Some(limit),
+                commitment: Some(CommitmentConfig::confirmed()),
+            };
+            self.rpc.get_signatures_for_address_with_config(&program, config)
         }).await
     }
 
     pub async fn get_transaction(
         &self,
         sig: &str,
-    ) -> Result<EncodedConfirmedTransactionWithStatusMeta, IndexerError> {
+    ) -> anyhow::Result<EncodedConfirmedTransactionWithStatusMeta> {
         let signature = Signature::from_str(sig)
-            .map_err(|e| IndexerError::Rpc(format!("Invalid signature: {e}")))?;
+            .map_err(|e| anyhow::anyhow!("Invalid signature: {e}"))?;
         let config = RpcTransactionConfig {
             encoding: Some(UiTransactionEncoding::Base64),
             commitment: Some(CommitmentConfig::confirmed()),
@@ -81,7 +81,7 @@ impl Fetcher {
 
     /// Generic async retry with exponential backoff capped at 30 s.
     /// Respects the cancellation token during backoff sleeps.
-    async fn retry<F, Fut, T>(&self, op: &str, f: F) -> Result<T, IndexerError>
+    async fn retry<F, Fut, T>(&self, op: &str, f: F) -> anyhow::Result<T>
     where
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<T, solana_client::client_error::ClientError>>,
@@ -93,13 +93,13 @@ impl Fetcher {
                 Err(e) => {
                     if attempt == self.max_retries {
                         error!(%op, attempt, error = %e, "Max retries exhausted");
-                        return Err(IndexerError::Rpc(format!("{op}: {e}")));
+                        return Err(anyhow::anyhow!("{op}: {e}"));
                     }
                     warn!(%op, attempt, error = %e, retry_in = ?delay, "Retrying");
                     tokio::select! {
                         _ = tokio::time::sleep(delay) => {}
                         _ = self.cancel.cancelled() => {
-                            return Err(IndexerError::Rpc(format!("{op}: cancelled during retry")));
+                            return Err(anyhow::anyhow!("{op}: cancelled during retry"));
                         }
                     }
                     delay = (delay * 2).min(Duration::from_secs(30));

@@ -10,7 +10,6 @@ use serde::Deserialize;
 use std::time::Duration;
 use sqlx::PgPool;
 use std::sync::Arc;
-use tower::{limit::RateLimitLayer, ServiceBuilder};
 use tracing::error;
 
 // ---------------------------------------------------------------------------
@@ -22,21 +21,10 @@ pub struct ApiState {
 }
 
 pub fn router(state: Arc<ApiState>) -> Router {
-    // 100 requests per second rate limit globally
-    let rate_limit = ServiceBuilder::new()
-        .layer(HandleErrorLayer::new(|err: BoxError| async move {
-            (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(serde_json::json!({ "error": format!("Rate limit exceeded: {err}") })),
-            )
-        }))
-        .layer(RateLimitLayer::new(100, Duration::from_secs(1)));
-
     Router::new()
         .route("/health", get(health))
         .route("/api/v1/tx/{signature}", get(get_transaction))
         .route("/api/v1/transactions", get(list_transactions))
-        .layer(rate_limit)
         .with_state(state)
 }
 

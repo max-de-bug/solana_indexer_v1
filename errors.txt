@@ -1,0 +1,45 @@
+﻿cargo :     Checking solana-indexer-v1 v0.1.0
+ (D:\projects_d\rust-solana-indexer\solana_in
+dexer_v1)
+At line:1 char:1
++ cargo check --message-format=short 2>&1 | O
+ut-File -Encoding utf8 err ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (
+        Checking so...ana_indexer_v1):String)
+     [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandEr
+    ror
+ 
+src\main.rs:4:1: error[E0583]: file not found
+ for module `error`
+src\api.rs:10:5: warning: unused import: `std
+::time::Duration`
+src\db.rs:6:9: warning: unused import: `sqlx:
+:PgPool as Pool`
+src\indexer\fetcher.rs:1:14: warning: unused 
+import: `anyhow`
+src\indexer\mod.rs:10:5: warning: unused impo
+rt: `solana_sdk::pubkey::Pubkey`
+src\indexer\fetcher.rs:61:78: error[E0599]: n
+o method named `clone` found for struct `GetC
+onfirmedSignaturesForAddress2Config` in the c
+urrent scope: method not found in `GetConfirm
+edSignaturesForAddress2Config`
+src\indexer\mod.rs:230:33: error[E0308]: mism
+atched types: expected `&Option<EncodedTransa
+ction>`, found `&EncodedTransaction`
+src\indexer\mod.rs:241:12: error[E0308]: mism
+atched types: expected `EncodedTransaction`, 
+found `Option<_>`
+src\api.rs:41:16: error[E0277]: the trait bou
+nd `HandleError<ConcurrencyLimit<Route>, ...,
+ _>: Service<...>` is not satisfied: the trai
+t `Service<axum::http::Request<axum::body::Bo
+dy>>` is not implemented for `HandleError<Con
+currencyLimit<Route>, ..., _>`
+warning: `solana-indexer-v1` (bin "solana-ind
+exer-v1") generated 4 warnings
+error: could not compile `solana-indexer-v1` 
+(bin "solana-indexer-v1") due to 5 previous e
+rrors; 4 warnings emitted

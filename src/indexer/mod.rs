@@ -238,18 +238,17 @@ async fn process_sig(state: &IndexerState, sig: &str, _hint_slot: u64) -> anyhow
     ).await?;
 
     // Decode instructions.
-    if let Some(encoded_tx) = &tx.transaction.transaction {
-        decode_and_store_tx(state, &mut db_tx, sig, slot, encoded_tx).await?;
-    }
+    let encoded_tx = &tx.transaction.transaction;
+    decode_and_store_tx(state, &mut db_tx, sig, slot, encoded_tx).await?;
 
     db_tx.commit().await?;
     debug!(%sig, %slot, "Indexed");
     Ok(())
 }
 
-fn extract_signer(encoded: &Option<EncodedTransaction>) -> Option<String> {
+fn extract_signer(encoded: &EncodedTransaction) -> Option<String> {
     match encoded {
-        Some(EncodedTransaction::Binary(blob, _)) => {
+        EncodedTransaction::Binary(blob, _) => {
             let bytes = base64::Engine::decode(
                 &base64::engine::general_purpose::STANDARD, blob,
             ).ok()?;

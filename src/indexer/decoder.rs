@@ -9,7 +9,7 @@ use tracing::warn;
 
 /// Match the first 8 bytes of instruction data against IDL discriminators.
 pub fn match_instruction<'a>(
-    data: &[u8],
+    data: &'a [u8],
     idl: &'a AnchorIdl,
 ) -> Option<(&'a crate::idl::IdlInstruction, &'a [u8])> {
     if data.len() < 8 {
