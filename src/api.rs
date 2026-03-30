@@ -1,13 +1,16 @@
 use axum::{
+    error_handling::HandleErrorLayer,
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::get,
-    Json, Router,
+    BoxError, Json, Router,
 };
 use serde::Deserialize;
+use std::time::Duration;
 use sqlx::PgPool;
 use std::sync::Arc;
+use tower::{limit::RateLimitLayer, ServiceBuilder};
 use tracing::error;
 
 // ---------------------------------------------------------------------------
@@ -19,10 +22,21 @@ pub struct ApiState {
 }
 
 pub fn router(state: Arc<ApiState>) -> Router {
+    // 100 requests per second rate limit globally
+    let rate_limit = ServiceBuilder::new()
+        .layer(HandleErrorLayer::new(|err: BoxError| async move {
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(serde_json::json!({ "error": format!("Rate limit exceeded: {err}") })),
+            )
+        }))
+        .layer(RateLimitLayer::new(100, Duration::from_secs(1)));
+
     Router::new()
         .route("/health", get(health))
-        .route("/api/v1/tx/:signature", get(get_transaction))
+        .route("/api/v1/tx/{signature}", get(get_transaction))
         .route("/api/v1/transactions", get(list_transactions))
+        .layer(rate_limit)
         .with_state(state)
 }
 
@@ -61,7 +75,10 @@ async fn get_transaction(
         ).into_response(),
         Err(e) => {
             error!(error = %e, "get_transaction failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Internal server error" })),
+            ).into_response()
         }
     }
 }
@@ -87,7 +104,10 @@ async fn list_transactions(
         }
         Err(e) => {
             error!(error = %e, "list_transactions failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Internal server error" })),
+            ).into_response()
         }
     }
 }

@@ -47,3 +47,4 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Config
 dotenvy = "0.15"
+tower = { version = "0.5.3", features = ["limit"] }

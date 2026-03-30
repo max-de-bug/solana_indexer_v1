@@ -12,6 +12,7 @@ use crate::indexer::IndexerState;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -64,7 +65,14 @@ async fn main() -> anyhow::Result<()> {
         &config.rpc_url,
         config.max_retries,
         config.retry_delay_ms,
+        cancel.clone(),
     );
+
+    let type_map = idl
+        .type_map()
+        .into_iter()
+        .map(|(k, v)| (k, v.clone()))
+        .collect();
 
     let state = Arc::new(IndexerState {
         pool: pool.clone(),
@@ -72,6 +80,7 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
         fetcher,
         cancel: cancel.clone(),
+        type_map,
     });
 
     let indexer_handle = tokio::spawn(indexer::run(state));
@@ -101,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
 /// Load IDL: file first, then on-chain.
 async fn load_idl(config: &Config) -> anyhow::Result<AnchorIdl> {
     if let Some(ref path) = config.idl_path {
-        if std::fs::metadata(path).is_ok() {
+        if Path::new(path).is_file() {
             info!(%path, "Loading IDL from file");
             return AnchorIdl::from_file(path);
         }

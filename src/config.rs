@@ -3,7 +3,7 @@ use std::str::FromStr;
 use tracing::info;
 
 /// Application configuration, loaded entirely from environment variables.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     pub rpc_url: String,
     pub database_url: String,
@@ -18,6 +18,24 @@ pub struct Config {
     pub max_retries: u32,
     pub retry_delay_ms: u64,
     pub poll_interval_ms: u64,
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("rpc_url", &"<redacted>")
+            .field("database_url", &"<redacted>")
+            .field("program_id", &self.program_id)
+            .field("idl_path", &self.idl_path)
+            .field("idl_account", &self.idl_account)
+            .field("indexing_mode", &self.indexing_mode)
+            .field("api_port", &self.api_port)
+            .field("batch_size", &self.batch_size)
+            .field("max_retries", &self.max_retries)
+            .field("retry_delay_ms", &self.retry_delay_ms)
+            .field("poll_interval_ms", &self.poll_interval_ms)
+            .finish()
+    }
 }
 
 /// How the indexer fetches data.

@@ -2,6 +2,9 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 use tracing::info;
 
+/// Re-export for callers that need to open transactions.
+pub use sqlx::PgPool as Pool;
+
 // ---------------------------------------------------------------------------
 // Pool
 // ---------------------------------------------------------------------------
@@ -55,11 +58,26 @@ pub async fn init_schema(pool: &PgPool) -> anyhow::Result<()> {
         )",
     ).execute(pool).await?;
 
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS failed_signatures (
+            id          BIGSERIAL   PRIMARY KEY,
+            signature   TEXT        NOT NULL,
+            slot        BIGINT      NOT NULL DEFAULT 0,
+            error       TEXT        NOT NULL,
+            retries     INTEGER     NOT NULL DEFAULT 0,
+            next_retry  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (signature)
+        )",
+    ).execute(pool).await?;
+
     for idx in &[
         "CREATE INDEX IF NOT EXISTS idx_tx_slot      ON transactions(slot)",
         "CREATE INDEX IF NOT EXISTS idx_tx_signer    ON transactions(signer)",
         "CREATE INDEX IF NOT EXISTS idx_ix_name      ON instructions(instruction_name)",
         "CREATE INDEX IF NOT EXISTS idx_ix_tx_sig    ON instructions(transaction_signature)",
+        "CREATE INDEX IF NOT EXISTS idx_fail_retry   ON failed_signatures(next_retry) WHERE retries < 5",
     ] {
         sqlx::query(idx).execute(pool).await?;
     }
@@ -114,8 +132,8 @@ pub async fn transaction_exists(pool: &PgPool, signature: &str) -> anyhow::Resul
 // Inserts
 // ---------------------------------------------------------------------------
 
-pub async fn insert_transaction(
-    pool: &PgPool,
+pub async fn insert_transaction<'e, E>(
+    executor: E,
     sig: &str,
     slot: u64,
     block_time: Option<i64>,
@@ -123,7 +141,10 @@ pub async fn insert_transaction(
     fee: Option<u64>,
     err_msg: Option<&str>,
     signer: Option<&str>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     sqlx::query(
         "INSERT INTO transactions (signature, slot, block_time, success, fee, err_msg, signer)
          VALUES ($1, $2, to_timestamp($3), $4, $5, $6, $7)
@@ -136,12 +157,12 @@ pub async fn insert_transaction(
     .bind(fee.map(|f| f as i64))
     .bind(err_msg)
     .bind(signer)
-    .execute(pool).await?;
+    .execute(executor).await?;
     Ok(())
 }
 
-pub async fn insert_instruction(
-    pool: &PgPool,
+pub async fn insert_instruction<'e, E>(
+    executor: E,
     tx_sig: &str,
     ix_index: i32,
     ix_name: &str,
@@ -149,7 +170,10 @@ pub async fn insert_instruction(
     args: &serde_json::Value,
     accounts: &serde_json::Value,
     raw_data: Option<&[u8]>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     sqlx::query(
         "INSERT INTO instructions
             (transaction_signature, instruction_index, instruction_name, program_id, args, accounts, raw_data)
@@ -162,7 +186,7 @@ pub async fn insert_instruction(
     .bind(args)
     .bind(accounts)
     .bind(raw_data)
-    .execute(pool).await?;
+    .execute(executor).await?;
     Ok(())
 }
 
@@ -226,14 +250,11 @@ pub async fn list_transactions(
     let (sql, needs_name, needs_signer) = build_list_query(instruction_name, signer);
 
     let mut query = sqlx::query(&sql);
-    let mut idx = 0;
     if needs_name {
         query = query.bind(instruction_name.unwrap());
-        idx += 1;
     }
     if needs_signer {
         query = query.bind(signer.unwrap());
-        idx += 1;
     }
     query = query.bind(limit).bind(offset);
 
@@ -279,4 +300,92 @@ fn build_list_query(name: Option<&str>, signer: Option<&str>) -> (String, bool, 
     sql.push_str(&format!(" ORDER BY t.slot DESC LIMIT ${idx} OFFSET ${}", idx + 1));
 
     (sql, needs_name, needs_signer)
+}
+
+// ---------------------------------------------------------------------------
+// Failed signature tracking (dead-letter queue)
+// ---------------------------------------------------------------------------
+
+/// Record a failed signature for later retry.
+pub async fn record_failed_signature(
+    pool: &PgPool,
+    signature: &str,
+    slot: u64,
+    error: &str,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO failed_signatures (signature, slot, error, retries, next_retry, updated_at)
+         VALUES ($1, $2, $3, 1, NOW() + INTERVAL '30 seconds', NOW())
+         ON CONFLICT (signature) DO UPDATE SET
+             retries = failed_signatures.retries + 1,
+             error   = EXCLUDED.error,
+             next_retry = NOW() + (INTERVAL '30 seconds' * (failed_signatures.retries + 1)),
+             updated_at = NOW()",
+    )
+    .bind(signature)
+    .bind(slot as i64)
+    .bind(error)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Fetch signatures that are due for retry (max 5 retries).
+pub async fn get_retryable_signatures(
+    pool: &PgPool,
+    limit: i64,
+) -> anyhow::Result<Vec<(String, u64)>> {
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT signature, slot FROM failed_signatures
+         WHERE retries < 5 AND next_retry <= NOW()
+         ORDER BY next_retry ASC
+         LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(s, slot)| (s, slot as u64)).collect())
+}
+
+/// Remove a signature from the dead-letter queue after successful processing.
+pub async fn remove_failed_signature(
+    pool: &PgPool,
+    signature: &str,
+) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM failed_signatures WHERE signature = $1")
+        .bind(signature)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_list_query() {
+        // No filters
+        let (sql, name, signer) = build_list_query(None, None);
+        assert!(!name);
+        assert!(!signer);
+        assert!(!sql.contains("JOIN instructions"));
+        assert!(sql.contains("LIMIT $1 OFFSET $2"));
+
+        // With name
+        let (sql, name, signer) = build_list_query(Some("initialize"), None);
+        assert!(name);
+        assert!(!signer);
+        assert!(sql.contains("JOIN instructions i ON"));
+        assert!(sql.contains("i.instruction_name = $1"));
+        assert!(sql.contains("LIMIT $2 OFFSET $3"));
+
+        // With both
+        let (sql, name, signer) = build_list_query(Some("swap"), Some("pub_key_1"));
+        assert!(name);
+        assert!(signer);
+        assert!(sql.contains("i.instruction_name = $1"));
+        assert!(sql.contains("t.signer = $2"));
+        assert!(sql.contains("LIMIT $3 OFFSET $4"));
+    }
 }

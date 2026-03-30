@@ -3,7 +3,7 @@ pub mod fetcher;
 
 use crate::config::{Config, IndexingMode};
 use crate::db;
-use crate::idl::AnchorIdl;
+use crate::idl::{AnchorIdl, IdlTypeDef};
 use crate::indexer::decoder::{decode_fields, match_instruction};
 use crate::indexer::fetcher::Fetcher;
 use serde_json::json;
@@ -22,6 +22,8 @@ pub struct IndexerState {
     pub config: Config,
     pub fetcher: Fetcher,
     pub cancel: CancellationToken,
+    /// Pre-computed type lookup — built once at startup.
+    pub type_map: HashMap<String, IdlTypeDef>,
 }
 
 /// Dispatch to the configured indexing strategy.
@@ -67,7 +69,10 @@ async fn run_batch_slots(
             }
             if si.slot > end_slot { continue; }
             if let Err(e) = process_sig(&state, &si.signature, si.slot).await {
-                warn!(sig = %si.signature, error = %e, "Failed");
+                warn!(sig = %si.signature, error = %e, "Failed — queued for retry");
+                let _ = db::record_failed_signature(
+                    &state.pool, &si.signature, si.slot, &e.to_string(),
+                ).await;
             }
             total += 1;
             if total % 100 == 0 {
@@ -96,7 +101,10 @@ async fn run_batch_signatures(
     for (i, sig) in signatures.iter().enumerate() {
         if state.cancel.is_cancelled() { break; }
         if let Err(e) = process_sig(&state, sig, 0).await {
-            warn!(%sig, error = %e, "Failed");
+            warn!(%sig, error = %e, "Failed — queued for retry");
+            let _ = db::record_failed_signature(
+                &state.pool, sig, 0, &e.to_string(),
+            ).await;
         }
         if (i + 1) % 50 == 0 {
             info!(progress = i + 1, total = signatures.len(), "Progress");
@@ -148,7 +156,10 @@ async fn run_realtime(state: Arc<IndexerState>) -> anyhow::Result<()> {
         for si in sigs.iter().rev() {
             if state.cancel.is_cancelled() { break; }
             if let Err(e) = process_sig(&state, &si.signature, si.slot).await {
-                warn!(sig = %si.signature, error = %e, "Failed");
+                warn!(sig = %si.signature, error = %e, "Failed — queued for retry");
+                let _ = db::record_failed_signature(
+                    &state.pool, &si.signature, si.slot, &e.to_string(),
+                ).await;
             }
         }
 
@@ -156,6 +167,9 @@ async fn run_realtime(state: Arc<IndexerState>) -> anyhow::Result<()> {
             db::update_sync_state(&state.pool, &pid, newest.slot, Some(&newest.signature)).await?;
         }
         info!(new_txs = sigs.len(), "Polled new transactions");
+
+        // Periodically retry failed signatures.
+        retry_failed_signatures(&state).await;
     }
     Ok(())
 }
@@ -173,7 +187,10 @@ async fn backfill(state: &IndexerState, until: Option<&str>) -> anyhow::Result<(
 
         for si in sigs.iter().rev() {
             if let Err(e) = process_sig(state, &si.signature, si.slot).await {
-                warn!(sig = %si.signature, error = %e, "Backfill failed");
+                warn!(sig = %si.signature, error = %e, "Backfill failed — queued for retry");
+                let _ = db::record_failed_signature(
+                    &state.pool, &si.signature, si.slot, &e.to_string(),
+                ).await;
             }
             total += 1;
         }
@@ -212,16 +229,20 @@ async fn process_sig(state: &IndexerState, sig: &str, _hint_slot: u64) -> anyhow
     // Extract signer from the transaction.
     let signer = extract_signer(&tx.transaction.transaction);
 
+    // Atomic: insert transaction + all instructions in one DB transaction.
+    let mut db_tx = state.pool.begin().await?;
+
     db::insert_transaction(
-        &state.pool, sig, slot, block_time, success, fee,
+        &mut *db_tx, sig, slot, block_time, success, fee,
         err_msg.as_deref(), signer.as_deref(),
     ).await?;
 
     // Decode instructions.
     if let Some(encoded_tx) = &tx.transaction.transaction {
-        decode_and_store(state, sig, slot, encoded_tx).await?;
+        decode_and_store_tx(state, &mut db_tx, sig, slot, encoded_tx).await?;
     }
 
+    db_tx.commit().await?;
     debug!(%sig, %slot, "Indexed");
     Ok(())
 }
@@ -240,29 +261,30 @@ fn extract_signer(encoded: &Option<EncodedTransaction>) -> Option<String> {
     }
 }
 
-async fn decode_and_store(
+async fn decode_and_store_tx(
     state: &IndexerState,
+    db_tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     tx_sig: &str,
-    slot: u64,
+    _slot: u64,
     encoded: &EncodedTransaction,
 ) -> anyhow::Result<()> {
-    let type_map = state.idl.type_map();
     let pid_str = state.config.program_id.to_string();
 
     let tx_bytes = match encoded {
         EncodedTransaction::Binary(blob, _) => {
             base64::Engine::decode(&base64::engine::general_purpose::STANDARD, blob)
-                .unwrap_or_default()
+                .map_err(|e| anyhow::anyhow!("Base64 decode failed: {e}"))?
         }
         _ => return Ok(()),
     };
 
-    let tx: solana_sdk::transaction::VersionedTransaction = match bincode::deserialize(&tx_bytes) {
-        Ok(t) => t,
-        Err(e) => { warn!(%tx_sig, error = %e, "Deserialize failed"); return Ok(()); }
-    };
+    let tx: solana_sdk::transaction::VersionedTransaction =
+        bincode::deserialize(&tx_bytes)
+            .map_err(|e| anyhow::anyhow!("Bincode deserialize failed: {e}"))?;
 
     let keys = tx.message.static_account_keys();
+    let type_map: HashMap<String, &crate::idl::IdlTypeDef> =
+        state.type_map.iter().map(|(k, v)| (k.clone(), v)).collect();
 
     for (ix_idx, ix) in tx.message.instructions().iter().enumerate() {
         let prog = keys.get(ix.program_id_index as usize)
@@ -278,15 +300,46 @@ async fn decode_and_store(
                 .unwrap_or_else(|e| { warn!(ix = %ix_def.name, error = %e, "Partial decode"); serde_json::Value::Null });
 
             db::insert_instruction(
-                &state.pool, tx_sig, ix_idx as i32, &ix_def.name, &pid_str,
+                &mut **db_tx, tx_sig, ix_idx as i32, &ix_def.name, &pid_str,
                 &args, &json!(accounts), Some(&ix.data),
             ).await?;
         } else {
             db::insert_instruction(
-                &state.pool, tx_sig, ix_idx as i32, "unknown", &pid_str,
+                &mut **db_tx, tx_sig, ix_idx as i32, "unknown", &pid_str,
                 &serde_json::Value::Null, &json!(accounts), Some(&ix.data),
             ).await?;
         }
     }
     Ok(())
+}
+
+/// Retry signatures from the dead-letter queue.
+async fn retry_failed_signatures(state: &IndexerState) {
+    let retryable = match db::get_retryable_signatures(&state.pool, 20).await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, "Failed to fetch retryable signatures");
+            return;
+        }
+    };
+
+    if retryable.is_empty() {
+        return;
+    }
+
+    info!(count = retryable.len(), "Retrying failed signatures");
+    for (sig, slot) in &retryable {
+        match process_sig(state, sig, *slot).await {
+            Ok(()) => {
+                info!(%sig, "Retry succeeded");
+                let _ = db::remove_failed_signature(&state.pool, sig).await;
+            }
+            Err(e) => {
+                warn!(%sig, error = %e, "Retry still failing");
+                let _ = db::record_failed_signature(
+                    &state.pool, sig, *slot, &e.to_string(),
+                ).await;
+            }
+        }
+    }
 }

@@ -194,3 +194,29 @@ fn decode_primitive(r: &mut BorshReader<'_>, name: &str) -> anyhow::Result<Value
         _ => { warn!(%name, "Unknown primitive"); Value::Null }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_borsh_reader_primitives() {
+        let data = [1, 42, 0, 0, 0, 0, 0, 0, 0];
+        let mut reader = BorshReader::new(&data);
+        assert_eq!(reader.read_bool().unwrap(), true);
+        assert_eq!(reader.read_u64().unwrap(), 42);
+        assert!(reader.read_u8().is_err()); // EOF
+    }
+
+    #[test]
+    fn test_decode_primitive() {
+        // i32 = 1, then i32 = -1 (both little endian)
+        let data = vec![1, 0, 0, 0, 255, 255, 255, 255]; 
+        let mut r = BorshReader::new(&data);
+        let val = decode_primitive(&mut r, "i32").unwrap();
+        assert_eq!(val, json!(1));
+        let val2 = decode_primitive(&mut r, "i32").unwrap();
+        assert_eq!(val2, json!(-1));
+    }
+}

@@ -211,3 +211,22 @@ fn to_snake_case(s: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_to_snake_case() {
+        assert_eq!(to_snake_case("InitConfig"), "init_config");
+        assert_eq!(to_snake_case("initialize"), "initialize");
+        assert_eq!(to_snake_case("UpdateTokenMetadata"), "update_token_metadata");
+    }
+
+    #[test]
+    fn test_sha256_first8() {
+        let hash = sha256_first8("global:initialize");
+        assert_eq!(hash.len(), 8);
+        assert_eq!(&hash, &[175, 175, 109, 31, 13, 152, 155, 237]); // Sol standard initialize discr
+    }
+}

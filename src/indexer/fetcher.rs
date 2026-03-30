@@ -1,4 +1,4 @@
-use crate::error::IndexerError;
+use anyhow::{anyhow, Result};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_client::GetConfirmedSignaturesForAddress2Config;
 use solana_client::rpc_config::RpcTransactionConfig;
@@ -9,6 +9,7 @@ use solana_sdk::signature::Signature;
 use solana_transaction_status::{EncodedConfirmedTransactionWithStatusMeta, UiTransactionEncoding};
 use std::str::FromStr;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, warn};
 
 /// Async RPC wrapper with exponential backoff retries.
@@ -16,10 +17,11 @@ pub struct Fetcher {
     rpc: RpcClient,
     max_retries: u32,
     initial_delay: Duration,
+    cancel: CancellationToken,
 }
 
 impl Fetcher {
-    pub fn new(rpc_url: &str, max_retries: u32, initial_delay_ms: u64) -> Self {
+    pub fn new(rpc_url: &str, max_retries: u32, initial_delay_ms: u64, cancel: CancellationToken) -> Self {
         Self {
             rpc: RpcClient::new_with_commitment(
                 rpc_url.to_string(),
@@ -27,6 +29,7 @@ impl Fetcher {
             ),
             max_retries,
             initial_delay: Duration::from_millis(initial_delay_ms),
+            cancel,
         }
     }
 
@@ -77,6 +80,7 @@ impl Fetcher {
     }
 
     /// Generic async retry with exponential backoff capped at 30 s.
+    /// Respects the cancellation token during backoff sleeps.
     async fn retry<F, Fut, T>(&self, op: &str, f: F) -> Result<T, IndexerError>
     where
         F: Fn() -> Fut,
@@ -92,7 +96,12 @@ impl Fetcher {
                         return Err(IndexerError::Rpc(format!("{op}: {e}")));
                     }
                     warn!(%op, attempt, error = %e, retry_in = ?delay, "Retrying");
-                    tokio::time::sleep(delay).await;
+                    tokio::select! {
+                        _ = tokio::time::sleep(delay) => {}
+                        _ = self.cancel.cancelled() => {
+                            return Err(IndexerError::Rpc(format!("{op}: cancelled during retry")));
+                        }
+                    }
                     delay = (delay * 2).min(Duration::from_secs(30));
                 }
             }
@@ -100,3 +109,4 @@ impl Fetcher {
         unreachable!()
     }
 }
+
