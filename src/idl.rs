@@ -102,7 +102,14 @@ pub struct IdlDefinedRef {
 pub struct IdlEnumVariant {
     pub name: String,
     #[serde(default)]
-    pub fields: Option<Vec<IdlField>>,
+    pub fields: Option<IdlEnumFields>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum IdlEnumFields {
+    Named(Vec<IdlField>),
+    Tuple(Vec<IdlType>),
 }
 
 // ---------------------------------------------------------------------------

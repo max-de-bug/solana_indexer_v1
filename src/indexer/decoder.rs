@@ -100,9 +100,7 @@ pub fn decode_fields(
         match decode_type(&mut reader, &field.field_type, type_map) {
             Ok(val) => { map.insert(field.name.clone(), val); }
             Err(e) => {
-                warn!(field = %field.name, error = %e, "Decode failed, stopping");
-                map.insert(field.name.clone(), Value::Null);
-                break; // subsequent fields would be at wrong offsets
+                anyhow::bail!("Failed to decode field '{}': {}", field.name, e);
             }
         }
     }
@@ -146,14 +144,22 @@ fn decode_type(
                             return Ok(json!({ "variant": idx }));
                         }
                         let v = &variants[idx];
-                        if let Some(fields) = &v.fields {
-                            let mut map = serde_json::Map::new();
-                            for f in fields {
-                                map.insert(f.name.clone(), decode_type(r, &f.field_type, tm)?);
+                        match &v.fields {
+                            Some(crate::idl::IdlEnumFields::Named(fields)) => {
+                                let mut map = serde_json::Map::new();
+                                for f in fields {
+                                    map.insert(f.name.clone(), decode_type(r, &f.field_type, tm)?);
+                                }
+                                Ok(json!({ &v.name: map }))
                             }
-                            Ok(json!({ &v.name: map }))
-                        } else {
-                            Ok(json!(&v.name))
+                            Some(crate::idl::IdlEnumFields::Tuple(types)) => {
+                                let mut arr = Vec::with_capacity(types.len());
+                                for t in types {
+                                    arr.push(decode_type(r, t, tm)?);
+                                }
+                                Ok(json!({ &v.name: arr }))
+                            }
+                            None => Ok(json!(&v.name)),
                         }
                     }
                 }
@@ -170,12 +176,12 @@ fn decode_primitive(r: &mut BorshReader<'_>, name: &str) -> anyhow::Result<Value
         "u8" => json!(r.read_u8()?),
         "u16" => json!(r.read_u16()?),
         "u32" => json!(r.read_u32()?),
-        "u64" => json!(r.read_u64()?),
+        "u64" => json!(r.read_u64()?.to_string()),
         "u128" => json!(r.read_u128()?.to_string()),
         "i8" => json!(r.read_i8()?),
         "i16" => json!(r.read_i16()?),
         "i32" => json!(r.read_i32()?),
-        "i64" => json!(r.read_i64()?),
+        "i64" => json!(r.read_i64()?.to_string()),
         "i128" => json!(r.read_i128()?.to_string()),
         "f32" => json!(r.read_f32()?),
         "f64" => json!(r.read_f64()?),
